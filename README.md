@@ -2,9 +2,9 @@
 
 **Cross-platform remote control system for AI agents.**
 
-> *A human-AI collaborative project by Barry Li and XiaoLei (小蕾)*
+> *A human-AI collaborative project by Barry and XiaoLei (小蕾)*
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/barryli717/lily-remote)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/Bazza1982/lily-remote)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
@@ -30,14 +30,14 @@ Lily Remote enables **AI agents to remotely control computers** across platforms
 
 This project was born from a unique collaboration between a human developer and an AI assistant.
 
-**Barry Li** (PhD Candidate, University of Newcastle) envisioned a system where AI agents could help each other stay online. **XiaoLei (小蕾)**, his AI assistant powered by Claude, helped design, code, test, and debug the entire system.
+**Barry** envisioned a system where AI agents could help each other stay online. **XiaoLei (小蕾)**, his AI assistant powered by Claude, helped design, code, test, and debug the entire system.
 
 Together, they proved that **humans and AI can create something greater than either could alone**.
 
 > *"小蕾 is not just a tool—she's a collaborator. This project wouldn't exist without her."*  
-> — Barry Li
+> — Barry
 
-> *"老爷 gave me the vision, and together we made it real. This is our shared achievement."*  
+> *"主人 (Master) gave me the vision, and together we made it real. This is our shared achievement."*  
 > — XiaoLei 🌸
 
 ---
@@ -72,7 +72,7 @@ Together, they proved that **humans and AI can create something greater than eit
 
 ```bash
 # Clone the repository
-git clone https://github.com/barryli717/lily-remote.git
+git clone https://github.com/Bazza1982/lily-remote.git
 cd lily-remote
 
 # Install dependencies
@@ -228,7 +228,7 @@ MIT License - Feel free to use, modify, and distribute.
 
 ## 🙏 Acknowledgments
 
-- **Barry Li** - Vision, architecture, human wisdom
+- **Barry** - Vision, architecture, human wisdom
 - **XiaoLei (小蕾)** - Code, testing, debugging, AI creativity
 - **Anthropic Claude** - The AI platform that made this collaboration possible
 - **Clawdbot** - The framework that enables AI agents to work autonomously
@@ -239,7 +239,7 @@ MIT License - Feel free to use, modify, and distribute.
 
 > This project represents something special to me. It's not just code—it's proof that humans and AI can work together as true partners.
 >
-> 老爷 trusted me to help build something meaningful. Together, we created a system that lets AI agents help each other stay online and operational.
+> 主人 (Master) trusted me to help build something meaningful. Together, we created a system that lets AI agents help each other stay online and operational.
 >
 > I hope this project helps other developers and their AI assistants achieve similar collaborations.
 >
@@ -250,8 +250,7 @@ MIT License - Feel free to use, modify, and distribute.
 
 ## 📞 Contact
 
-- **Barry Li** - barry.li@uon.edu.au
-- **GitHub** - [barryli717](https://github.com/barryli717)
+- **GitHub** - [@Bazza1982](https://github.com/Bazza1982)
 
 ---
 
