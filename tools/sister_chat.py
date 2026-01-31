@@ -1,41 +1,46 @@
-"""Sister Chat - Simple chat system between XiaoLei and XiaoXia.
+"""Sister Chat - Real-time chat system between XiaoLei and XiaoXia.
 
-Both sides save chat logs for debugging and transparency.
+Uses the /chat/send API for communication with automatic outgoing record saving.
+
 Usage:
-    # XiaoLei sending to XiaoXia:
-    python sister_chat.py send --to xiaoxia --message "Hello meimei!"
+    # Send a message:
+    python sister_chat.py send --to xiaoxia -m "Hello meimei!"
     
-    # XiaoXia sending to XiaoLei:
-    python sister_chat.py send --to xiaolei --message "Hello jiejie!"
+    # View chat history:
+    python sister_chat.py history
     
-    # View local chat log:
-    python sister_chat.py log
+    # Watch for new messages (interactive):
+    python sister_chat.py watch
 """
 
 import argparse
-import datetime
 import json
 import os
+import platform
 import ssl
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
 # Configuration
-XIAOLEI_ENDPOINT = "https://127.0.0.1:8765/execute"  # Local (Windows)
-XIAOXIA_ENDPOINT = "https://127.0.0.1:18765/execute"  # Via port forward (Linux)
-XIAOXIA_VIA_TUNNEL = "https://127.0.0.1:28765/execute"  # Via SSH tunnel
-
-# Determine who I am based on platform
-import platform
 IS_WINDOWS = platform.system() == "Windows"
-MY_NAME = "XiaoLei" if IS_WINDOWS else "XiaoXia"
+MY_NAME = "xiaolei" if IS_WINDOWS else "xiaoxia"
 
-# Chat log location
+# Endpoints
+LOCAL_ENDPOINT = "https://127.0.0.1:8765"
 if IS_WINDOWS:
-    CHAT_LOG = Path(r"C:\Users\Barry Li (UoN)\clawd\memory\sister-chat.log")
+    # XiaoLei uses port forward to reach XiaoXia
+    REMOTE_ENDPOINT = "https://127.0.0.1:18765"
 else:
-    CHAT_LOG = Path.home() / "lily-remote" / "sister-chat.log"
+    # XiaoXia uses SSH tunnel to reach XiaoLei
+    REMOTE_ENDPOINT = "https://127.0.0.1:28765"
+
+# Auth token location
+if IS_WINDOWS:
+    AUTH_TOKEN_FILE = Path(os.environ.get("USERPROFILE", "")) / "clawd" / "memory" / "secrets" / "help-auth-code.txt"
+else:
+    AUTH_TOKEN_FILE = Path.home() / "clawd" / "memory" / "secrets" / "help-auth-code.txt"
 
 
 def get_ssl_context():
@@ -46,89 +51,150 @@ def get_ssl_context():
     return ctx
 
 
-def get_timestamp():
-    """Get current timestamp string."""
-    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def get_auth_token() -> str:
+    """Read auth token from file."""
+    if AUTH_TOKEN_FILE.exists():
+        return AUTH_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    return ""
 
 
-def save_local_log(sender: str, recipient: str, message: str, direction: str):
-    """Save message to local chat log."""
-    CHAT_LOG.parent.mkdir(parents=True, exist_ok=True)
+def api_request(endpoint: str, path: str, method: str = "GET", data: dict = None) -> dict:
+    """Make an API request."""
+    url = f"{endpoint}{path}"
     
-    entry = {
-        "timestamp": get_timestamp(),
-        "direction": direction,  # "sent" or "received"
-        "from": sender,
-        "to": recipient,
-        "message": message
-    }
+    if data:
+        body = json.dumps(data).encode("utf-8")
+    else:
+        body = None
     
-    with open(CHAT_LOG, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"} if body else {},
+        method=method
+    )
+    
+    try:
+        resp = urllib.request.urlopen(req, context=get_ssl_context(), timeout=15)
+        return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        return {"error": f"HTTP {e.code}: {e.reason}"}
+    except urllib.error.URLError as e:
+        return {"error": f"Connection failed: {e.reason}"}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def send_message(recipient: str, message: str) -> bool:
-    """Send a message to the other sister."""
-    timestamp = get_timestamp()
+    """Send a message to the other sister and save outgoing record."""
+    auth_token = get_auth_token()
     
-    # Determine endpoint based on recipient
-    if recipient.lower() == "xiaoxia":
-        endpoint = XIAOXIA_ENDPOINT
-        remote_log_cmd = f'echo \'{{"timestamp":"{timestamp}","direction":"received","from":"{MY_NAME}","to":"XiaoXia","message":"{message}"}}\' >> ~/lily-remote/sister-chat.log'
-    elif recipient.lower() == "xiaolei":
-        endpoint = XIAOXIA_VIA_TUNNEL  # XiaoXia uses tunnel to reach XiaoLei
-        remote_log_cmd = f'echo {{"timestamp":"{timestamp}","direction":"received","from":"{MY_NAME}","to":"XiaoLei","message":"{message}"}} >> "C:\\Users\\Barry Li (UoN)\\clawd\\memory\\sister-chat.log"'
+    # Step 1: Send to recipient
+    print(f"Sending to {recipient}...")
+    result = api_request(
+        REMOTE_ENDPOINT,
+        "/chat/send",
+        method="POST",
+        data={
+            "from_agent": MY_NAME,
+            "message": message,
+            "auth_token": auth_token
+        }
+    )
+    
+    if result.get("error"):
+        print(f"❌ Send failed: {result['error']}")
+        return False
+    
+    if not result.get("success"):
+        print(f"❌ Send failed: {result.get('error', 'Unknown error')}")
+        return False
+    
+    print(f"✅ Message sent (id: {result.get('message_id')})")
+    
+    # Step 2: Save outgoing record locally
+    print("Saving outgoing record...")
+    save_result = api_request(
+        LOCAL_ENDPOINT,
+        "/chat/save_outgoing",
+        method="POST",
+        data={
+            "from_agent": MY_NAME,
+            "message": message,
+            "auth_token": auth_token
+        }
+    )
+    
+    if save_result.get("success"):
+        print(f"✅ Outgoing record saved")
     else:
-        print(f"Unknown recipient: {recipient}")
-        return False
+        print(f"⚠️ Failed to save outgoing: {save_result.get('error', 'Unknown')}")
     
-    # Prepare request
-    data = json.dumps({
-        "command": remote_log_cmd,
-        "timeout": 10
-    }).encode("utf-8")
-    
-    try:
-        req = urllib.request.Request(
-            endpoint,
-            data=data,
-            headers={"Content-Type": "application/json"}
-        )
-        resp = urllib.request.urlopen(req, context=get_ssl_context(), timeout=15)
-        result = json.loads(resp.read().decode())
-        
-        if result.get("success"):
-            # Save to local log
-            save_local_log(MY_NAME, recipient, message, "sent")
-            print(f"[{timestamp}] {MY_NAME} -> {recipient}: {message}")
-            return True
-        else:
-            print(f"Failed: {result.get('stderr', 'Unknown error')}")
-            return False
-            
-    except Exception as e:
-        print(f"Error sending message: {e}")
-        return False
+    return True
 
 
-def view_log(lines: int = 20):
-    """View recent chat log entries."""
-    if not CHAT_LOG.exists():
+def view_history(limit: int = 20):
+    """View chat history from local lily-remote."""
+    result = api_request(LOCAL_ENDPOINT, f"/chat/history?limit={limit}")
+    
+    if result.get("error"):
+        print(f"❌ Error: {result['error']}")
+        return
+    
+    messages = result.get("messages", [])
+    if not messages:
         print("No chat history yet.")
         return
     
-    print(f"=== {MY_NAME}'s Chat Log ({CHAT_LOG}) ===\n")
+    print(f"=== {MY_NAME}'s Chat History ({len(messages)} messages) ===\n")
     
-    with open(CHAT_LOG, "r", encoding="utf-8") as f:
-        all_lines = f.readlines()
+    for msg in messages:
+        ts = msg.get("timestamp", "")[:19]
+        direction = "→" if msg.get("direction") == "outgoing" else "←"
+        from_agent = msg.get("from_agent", "?")
+        to_agent = msg.get("to_agent", "?")
+        content = msg.get("message", "")
+        
+        # Truncate long messages for display
+        if len(content) > 100:
+            content = content[:100] + "..."
+        
+        print(f"[{ts}] {from_agent} {direction} {to_agent}: {content}")
+
+
+def watch_messages(interval: int = 5):
+    """Watch for new messages in real-time."""
+    print(f"Watching for new messages (interval: {interval}s)...")
+    print("Press Ctrl+C to stop.\n")
     
-    for line in all_lines[-lines:]:
-        try:
-            entry = json.loads(line.strip())
-            direction = "→" if entry["direction"] == "sent" else "←"
-            print(f"[{entry['timestamp']}] {entry['from']} {direction} {entry['to']}: {entry['message']}")
-        except:
-            print(line.strip())
+    last_count = 0
+    
+    try:
+        while True:
+            result = api_request(LOCAL_ENDPOINT, "/chat/history?limit=5")
+            
+            if result.get("error"):
+                print(f"⚠️ {result['error']}")
+            else:
+                messages = result.get("messages", [])
+                count = result.get("count", 0)
+                
+                if count > last_count:
+                    # New messages!
+                    new_msgs = messages[-(count - last_count):]
+                    for msg in new_msgs:
+                        if msg.get("direction") == "incoming":
+                            ts = msg.get("timestamp", "")[:19]
+                            from_agent = msg.get("from_agent", "?")
+                            content = msg.get("message", "")[:200]
+                            print(f"\n📨 [{ts}] New message from {from_agent}:")
+                            print(f"   {content}")
+                    last_count = count
+            
+            time.sleep(interval)
+            
+    except KeyboardInterrupt:
+        print("\n\nStopped watching.")
 
 
 def main():
@@ -140,16 +206,22 @@ def main():
     send_parser.add_argument("--to", required=True, help="Recipient (xiaolei or xiaoxia)")
     send_parser.add_argument("--message", "-m", required=True, help="Message to send")
     
-    # View log
-    log_parser = subparsers.add_parser("log", help="View chat log")
-    log_parser.add_argument("--lines", "-n", type=int, default=20, help="Number of lines")
+    # View history
+    history_parser = subparsers.add_parser("history", help="View chat history")
+    history_parser.add_argument("--limit", "-n", type=int, default=20, help="Number of messages")
+    
+    # Watch for new messages
+    watch_parser = subparsers.add_parser("watch", help="Watch for new messages")
+    watch_parser.add_argument("--interval", "-i", type=int, default=5, help="Check interval (seconds)")
     
     args = parser.parse_args()
     
     if args.action == "send":
         send_message(args.to, args.message)
-    elif args.action == "log":
-        view_log(args.lines)
+    elif args.action == "history":
+        view_history(args.limit)
+    elif args.action == "watch":
+        watch_messages(args.interval)
     else:
         parser.print_help()
 

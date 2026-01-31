@@ -421,6 +421,56 @@ async def broadcast_frame(b64_data: str, metrics: FrameMetrics) -> None:
         _connected_websockets.discard(ws)
 
 
+def _run_blocking_subprocess(command: str, shell: bool, timeout: int, cwd: Optional[str]):
+    """
+    Synchronous subprocess execution - runs in thread pool to avoid blocking event loop.
+    
+    This function is intentionally synchronous and will be called via run_in_executor.
+    Moved outside create_app() for testability.
+    """
+    import subprocess
+    import time as time_module
+    
+    start = time_module.time()
+    try:
+        result = subprocess.run(
+            command,
+            shell=shell,
+            capture_output=True,
+            encoding='utf-8',
+            errors='ignore',  # Handle encoding errors gracefully
+            timeout=timeout,
+            cwd=cwd,
+        )
+        duration = (time_module.time() - start) * 1000
+        
+        return {
+            'success': result.returncode == 0,
+            'exit_code': result.returncode,
+            'stdout': result.stdout[:50000] if result.stdout else '',
+            'stderr': result.stderr[:10000] if result.stderr else '',
+            'duration_ms': duration,
+        }
+    except subprocess.TimeoutExpired:
+        duration = (time_module.time() - start) * 1000
+        return {
+            'success': False,
+            'exit_code': -1,
+            'stdout': '',
+            'stderr': f'Command timed out after {timeout}s',
+            'duration_ms': duration,
+        }
+    except Exception as e:
+        duration = (time_module.time() - start) * 1000
+        return {
+            'success': False,
+            'exit_code': -1,
+            'stdout': '',
+            'stderr': str(e),
+            'duration_ms': duration,
+        }
+
+
 def create_app(
     pairing_manager: PairingManager,
     session_manager: Optional[SessionManager] = None,
@@ -813,54 +863,6 @@ def create_app(
         stdout: str
         stderr: str
         duration_ms: float
-
-    def _run_blocking_subprocess(command: str, shell: bool, timeout: int, cwd: Optional[str]):
-        """
-        Synchronous subprocess execution - runs in thread pool to avoid blocking event loop.
-        
-        This function is intentionally synchronous and will be called via run_in_executor.
-        """
-        import subprocess
-        import time as time_module
-        
-        start = time_module.time()
-        try:
-            result = subprocess.run(
-                command,
-                shell=shell,
-                capture_output=True,
-                encoding='utf-8',
-                errors='ignore',  # Handle encoding errors gracefully
-                timeout=timeout,
-                cwd=cwd,
-            )
-            duration = (time_module.time() - start) * 1000
-            
-            return {
-                'success': result.returncode == 0,
-                'exit_code': result.returncode,
-                'stdout': result.stdout[:50000] if result.stdout else '',
-                'stderr': result.stderr[:10000] if result.stderr else '',
-                'duration_ms': duration,
-            }
-        except subprocess.TimeoutExpired:
-            duration = (time_module.time() - start) * 1000
-            return {
-                'success': False,
-                'exit_code': -1,
-                'stdout': '',
-                'stderr': f'Command timed out after {timeout}s',
-                'duration_ms': duration,
-            }
-        except Exception as e:
-            duration = (time_module.time() - start) * 1000
-            return {
-                'success': False,
-                'exit_code': -1,
-                'stdout': '',
-                'stderr': str(e),
-                'duration_ms': duration,
-            }
 
     @app.post("/execute", response_model=ExecuteResponse)
     async def execute_command(body: ExecuteBody):
