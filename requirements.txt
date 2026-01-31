@@ -1,0 +1,16 @@
+# Core dependencies (all platforms)
+fastapi
+uvicorn
+websockets
+mss
+pystray
+pillow
+cryptography
+zeroconf
+httpx
+
+# Linux/macOS input control
+pynput; sys_platform == 'linux' or sys_platform == 'darwin'
+
+# Linux window info (optional, for verify module)
+python-xlib; sys_platform == 'linux'

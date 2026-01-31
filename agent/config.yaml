@@ -1,0 +1,49 @@
+# Lily Remote Agent Configuration
+# ================================
+# Version: 1.0.0
+# Authors: Barry Li & XiaoLei (小蕾)
+
+server:
+  host: "0.0.0.0"
+  port: 8765
+  use_tls: true
+
+security:
+  # LAN MODE: Skip authentication for local network use
+  # Set to true for home/office LAN (safe, no approval needed)
+  # Set to false for internet-exposed deployments
+  lan_mode: true
+  
+  # Legacy settings (only used when lan_mode is false)
+  require_pairing: true
+  session_timeout_minutes: 30
+  max_sessions: 5
+  
+  # Rate limiting
+  rate_limit:
+    requests_per_minute: 120
+    burst: 20
+
+screen:
+  # Capture quality (1-100)
+  quality: 75
+  
+  # Max FPS for streaming
+  max_fps: 30
+  
+  # Downscale factor (1 = full resolution)
+  scale: 1.0
+
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  level: INFO
+  
+  # Audit log location (relative to ~/.lily-remote/)
+  audit_file: audit.log
+
+tray:
+  # Show system tray icon
+  enabled: true
+  
+  # Show notifications
+  notifications: true
