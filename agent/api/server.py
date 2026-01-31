@@ -313,6 +313,35 @@ class CommandStatusResponse(BaseModel):
     error: Optional[str] = None
 
 
+class ChatMessageBody(BaseModel):
+    """Request body for sending a chat message."""
+    from_agent: str  # Sender agent name (e.g., "xiaoxia")
+    message: str  # Message content
+    auth_token: Optional[str] = None  # Optional auth token for security
+
+
+class ChatMessage(BaseModel):
+    """A chat message."""
+    timestamp: str
+    from_agent: str
+    to_agent: str
+    message: str
+    direction: str  # "incoming" or "outgoing"
+
+
+class ChatResponse(BaseModel):
+    """Response for chat operations."""
+    success: bool
+    message_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+class ChatHistoryResponse(BaseModel):
+    """Response for chat history."""
+    messages: list[ChatMessage]
+    count: int
+
+
 @dataclass
 class FrameStreamConfig:
     """Configuration for frame streaming."""
@@ -493,6 +522,239 @@ def create_app(
             uptime=time.time() - _start_time,
         )
 
+    # === Chat endpoints (for agent-to-agent communication) ===
+    
+    # Chat storage path
+    import os
+    from pathlib import Path
+    from datetime import datetime
+    
+    def _get_chat_file() -> Path:
+        """Get the path to the chat history file."""
+        if platform.system() == "Windows":
+            base = Path(os.environ.get("USERPROFILE", "")) / ".lily-remote"
+        else:
+            base = Path.home() / ".lily-remote"
+        base.mkdir(parents=True, exist_ok=True)
+        return base / "chat_history.json"
+    
+    def _load_chat_history() -> list[dict]:
+        """Load chat history from file."""
+        chat_file = _get_chat_file()
+        if chat_file.exists():
+            try:
+                return json.loads(chat_file.read_text(encoding="utf-8"))
+            except:
+                return []
+        return []
+    
+    def _save_chat_message(msg: dict):
+        """Append a message to chat history."""
+        history = _load_chat_history()
+        history.append(msg)
+        # Keep last 1000 messages
+        if len(history) > 1000:
+            history = history[-1000:]
+        _get_chat_file().write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _get_auth_token() -> Optional[str]:
+        """Get the configured auth token for chat."""
+        # Check common locations for auth token
+        token_paths = []
+        if platform.system() == "Windows":
+            token_paths = [
+                Path(os.environ.get("USERPROFILE", "")) / "clawd" / "memory" / "secrets" / "help-auth-code.txt",
+                Path(os.environ.get("USERPROFILE", "")) / ".lily-remote" / "chat-token.txt",
+            ]
+        else:
+            token_paths = [
+                Path.home() / "clawd" / "memory" / "secrets" / "help-auth-code.txt",
+                Path.home() / ".lily-remote" / "chat-token.txt",
+            ]
+        
+        for path in token_paths:
+            if path.exists():
+                try:
+                    return path.read_text(encoding="utf-8").strip()
+                except:
+                    pass
+        return None
+    
+    def _verify_chat_token(provided_token: Optional[str]) -> bool:
+        """Verify the chat auth token. Returns True if valid or no token configured."""
+        stored_token = _get_auth_token()
+        if not stored_token:
+            # No token configured = allow all (LAN mode)
+            return True
+        if not provided_token:
+            return False
+        return provided_token == stored_token
+
+    def _trigger_local_agent(from_agent: str, message: str):
+        """Trigger local Clawdbot agent to respond to chat message.
+        
+        Uses `clawdbot cron wake` CLI command instead of HTTP API,
+        because Gateway wake is implemented via WebSocket RPC, not REST.
+        """
+        import threading
+        import subprocess
+        import shlex
+        
+        def do_trigger():
+            try:
+                # Construct wake message
+                wake_text = f"收到来自 {from_agent} 的聊天消息，请检查 curl -k https://127.0.0.1:8765/chat/history 并回复！"
+                
+                # Use clawdbot CLI to trigger wake (works on both Windows and Linux)
+                # clawdbot system event --mode now triggers immediate heartbeat
+                cmd = ["clawdbot", "system", "event", "--text", wake_text, "--mode", "now"]
+                
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        shell=(platform.system() == "Windows")  # Windows needs shell=True for PATH
+                    )
+                    
+                    if result.returncode == 0:
+                        logger.info(f"Agent triggered successfully via clawdbot cron wake")
+                    else:
+                        logger.warning(f"clawdbot cron wake failed: {result.stderr}")
+                        
+                except subprocess.TimeoutExpired:
+                    logger.warning("clawdbot cron wake timed out")
+                except FileNotFoundError:
+                    logger.warning("clawdbot CLI not found in PATH")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to trigger agent: {e}")
+        
+        # Run in background thread to not block response
+        threading.Thread(target=do_trigger, daemon=True).start()
+
+    @app.post("/chat/send", response_model=ChatResponse)
+    async def chat_send(body: ChatMessageBody):
+        """
+        Receive a chat message from another agent.
+        Optionally requires auth_token if configured.
+        Automatically triggers local Clawdbot agent to respond.
+        """
+        try:
+            # Verify token if configured
+            if not _verify_chat_token(body.auth_token):
+                logger.warning(f"Chat rejected: invalid auth token from {body.from_agent}")
+                return ChatResponse(success=False, error="Invalid or missing auth token")
+            
+            my_name = socket.gethostname().lower()
+            if "xiaolei" in my_name or "desktop-vn0amd7" in my_name.lower():
+                my_name = "xiaolei"
+            elif "xiaoxia" in my_name or "lily-virtualbox" in my_name.lower():
+                my_name = "xiaoxia"
+            
+            msg = {
+                "timestamp": datetime.now().isoformat(),
+                "from_agent": body.from_agent,
+                "to_agent": my_name,
+                "message": body.message,
+                "direction": "incoming",
+                "read": False,  # Mark as unread for /chat/check
+            }
+            _save_chat_message(msg)
+            
+            msg_id = f"msg_{int(time.time() * 1000)}"
+            logger.info(f"Chat received from {body.from_agent}: {body.message[:50]}...")
+            
+            # Trigger local agent to respond
+            _trigger_local_agent(body.from_agent, body.message)
+            
+            return ChatResponse(success=True, message_id=msg_id)
+        except Exception as e:
+            logger.error(f"Chat error: {e}")
+            return ChatResponse(success=False, error=str(e))
+
+    @app.post("/chat/save_outgoing", response_model=ChatResponse)
+    async def chat_save_outgoing(body: ChatMessageBody):
+        """
+        Save an outgoing message to local chat history.
+        Called by sender after successfully sending to recipient.
+        """
+        try:
+            my_name = socket.gethostname().lower()
+            if "xiaolei" in my_name or "desktop-vn0amd7" in my_name.lower():
+                my_name = "xiaolei"
+            elif "xiaoxia" in my_name or "lily-virtualbox" in my_name.lower():
+                my_name = "xiaoxia"
+            
+            # body.from_agent is actually "me" (the sender)
+            # body.message contains the message we sent
+            # We need to figure out who we sent it to
+            to_agent = "xiaoxia" if my_name == "xiaolei" else "xiaolei"
+            
+            msg = {
+                "timestamp": datetime.now().isoformat(),
+                "from_agent": my_name,
+                "to_agent": to_agent,
+                "message": body.message,
+                "direction": "outgoing",
+            }
+            _save_chat_message(msg)
+            
+            msg_id = f"out_{int(time.time() * 1000)}"
+            logger.info(f"Outgoing message saved: {body.message[:50]}...")
+            
+            return ChatResponse(success=True, message_id=msg_id)
+        except Exception as e:
+            logger.error(f"Save outgoing error: {e}")
+            return ChatResponse(success=False, error=str(e))
+
+    @app.get("/chat/history", response_model=ChatHistoryResponse)
+    async def chat_history(limit: int = 50):
+        """Get recent chat history."""
+        history = _load_chat_history()
+        recent = history[-limit:] if len(history) > limit else history
+        return ChatHistoryResponse(
+            messages=[ChatMessage(**m) for m in recent],
+            count=len(recent),
+        )
+
+    @app.get("/chat/check")
+    async def chat_check():
+        """
+        Check for unread incoming messages.
+        Returns unread messages and marks them as read.
+        This is the lightweight interrupt mechanism for sister chat.
+        """
+        history = _load_chat_history()
+        
+        # Find unread incoming messages
+        # Only messages with explicit read=False are unread
+        # Messages without 'read' field are old messages, treat as read
+        unread = []
+        updated = False
+        for msg in history:
+            if msg.get("direction") == "incoming" and msg.get("read") is False:
+                unread.append(msg)
+                msg["read"] = True
+                updated = True
+        
+        # Save if we marked any as read
+        if updated:
+            _save_chat_history(history)
+        
+        return {
+            "unread_count": len(unread),
+            "messages": unread,
+        }
+
+    def _save_chat_history(history: list):
+        """Save full chat history back to file."""
+        chat_file = _get_chat_file()
+        chat_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(chat_file, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+
     @app.get("/screen/info", response_model=ScreenInfoResponse)
     async def screen_info():
         """Get screen information - no authentication required."""
@@ -552,10 +814,60 @@ def create_app(
         stderr: str
         duration_ms: float
 
+    def _run_blocking_subprocess(command: str, shell: bool, timeout: int, cwd: Optional[str]):
+        """
+        Synchronous subprocess execution - runs in thread pool to avoid blocking event loop.
+        
+        This function is intentionally synchronous and will be called via run_in_executor.
+        """
+        import subprocess
+        import time as time_module
+        
+        start = time_module.time()
+        try:
+            result = subprocess.run(
+                command,
+                shell=shell,
+                capture_output=True,
+                encoding='utf-8',
+                errors='ignore',  # Handle encoding errors gracefully
+                timeout=timeout,
+                cwd=cwd,
+            )
+            duration = (time_module.time() - start) * 1000
+            
+            return {
+                'success': result.returncode == 0,
+                'exit_code': result.returncode,
+                'stdout': result.stdout[:50000] if result.stdout else '',
+                'stderr': result.stderr[:10000] if result.stderr else '',
+                'duration_ms': duration,
+            }
+        except subprocess.TimeoutExpired:
+            duration = (time_module.time() - start) * 1000
+            return {
+                'success': False,
+                'exit_code': -1,
+                'stdout': '',
+                'stderr': f'Command timed out after {timeout}s',
+                'duration_ms': duration,
+            }
+        except Exception as e:
+            duration = (time_module.time() - start) * 1000
+            return {
+                'success': False,
+                'exit_code': -1,
+                'stdout': '',
+                'stderr': str(e),
+                'duration_ms': duration,
+            }
+
     @app.post("/execute", response_model=ExecuteResponse)
     async def execute_command(body: ExecuteBody):
         """
         Execute a shell command on the target PC.
+        
+        Uses run_in_executor to avoid blocking the event loop.
         
         Args:
             command: Command to execute
@@ -566,47 +878,21 @@ def create_app(
         Returns:
             Command output and exit code
         """
-        import subprocess
-        import time as time_module
+        from functools import partial
         
-        start = time_module.time()
-        try:
-            result = subprocess.run(
-                body.command,
-                shell=body.shell,
-                capture_output=True,
-                text=True,
-                timeout=body.timeout,
-                cwd=body.cwd,
-            )
-            duration = (time_module.time() - start) * 1000
-            
-            return ExecuteResponse(
-                success=result.returncode == 0,
-                exit_code=result.returncode,
-                stdout=result.stdout[:50000],  # Limit output size
-                stderr=result.stderr[:10000],
-                duration_ms=duration,
-            )
-        except subprocess.TimeoutExpired:
-            duration = (time_module.time() - start) * 1000
-            return ExecuteResponse(
-                success=False,
-                exit_code=-1,
-                stdout="",
-                stderr=f"Command timed out after {body.timeout}s",
-                duration_ms=duration,
-            )
-        except Exception as e:
-            duration = (time_module.time() - start) * 1000
-            logger.error("Command execution failed: %s", e)
-            return ExecuteResponse(
-                success=False,
-                exit_code=-1,
-                stdout="",
-                stderr=str(e),
-                duration_ms=duration,
-            )
+        loop = asyncio.get_running_loop()
+        
+        # Run blocking subprocess in thread pool
+        func = partial(_run_blocking_subprocess, body.command, body.shell, body.timeout, body.cwd)
+        result = await loop.run_in_executor(None, func)
+        
+        return ExecuteResponse(
+            success=result['success'],
+            exit_code=result['exit_code'],
+            stdout=result['stdout'],
+            stderr=result['stderr'],
+            duration_ms=result['duration_ms'],
+        )
 
     # === Pairing endpoints (no auth required) ===
 
